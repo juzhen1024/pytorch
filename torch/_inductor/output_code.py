@@ -189,22 +189,27 @@ def maybe_handle_backward_generation(
     # See [Backward Generation Handling]
     # if cudagraph'd the forward and set the device, we need to let the cudagraph manager
     # know we are running the backward even if we will not run it in cudagraphs
-    if is_backward and config.triton.cudagraph_trees:
-        if boxed_forward_device_index is None:
-            raise AssertionError("boxed_forward_device_index must not be None")
-        if boxed_forward_device_index.value is None:
-            raise AssertionError("boxed_forward_device_index.value must not be None")
+    if (
+        is_backward
+        and config.triton.cudagraph_trees
+        and boxed_forward_device_index is not None
+        and boxed_forward_device_index.value is not None
+    ):
         compiled_graph_callable = compiled_graph.current_callable
-
-        manager = torch._inductor.cudagraph_trees.get_manager(
-            boxed_forward_device_index.value, create_if_none_exists=False
-        )
-        # should already exist from forward
-        if manager is None:
-            raise AssertionError("CUDAGraph manager must not be None")
+        forward_device_index = boxed_forward_device_index.value
+        manager = None
 
         def compiled_artifact(new_inputs: Sequence[InputType]) -> object:
-            manager.set_to_running_backward()  # type: ignore[union-attr]
+            nonlocal manager
+            # On an AOTAutograd cache hit, post_compile runs before the forward
+            # creates its manager. Resolve it when the backward first executes;
+            # runtime capture-size filtering may legitimately leave it absent.
+            if manager is None:
+                manager = torch._inductor.cudagraph_trees.get_manager(
+                    forward_device_index, create_if_none_exists=False
+                )
+            if manager is not None:
+                manager.set_to_running_backward()
             return compiled_graph_callable(new_inputs)
 
         compiled_graph.current_callable = compiled_artifact
@@ -884,9 +889,9 @@ class CompiledFxGraph(OutputCode):
         if graph_kwargs["is_backward"] is None:
             raise AssertionError("graph_kwargs['is_backward'] must not be None")
         is_backward = graph_kwargs["is_backward"]
-        # A direction-specific annotation can override the forward-derived
-        # shared BoxedBool. The override is serialized with this FX graph so
-        # AOTAutograd cache hits make the same decision.
+        # A direction-specific annotation or nested-region opt-in can override
+        # the forward-derived shared BoxedBool. The override is serialized with
+        # this FX graph so AOTAutograd cache hits make the same decision.
         cudagraphs_post_compile_override = self.fx_kwargs.get(
             "cudagraphs_post_compile_override"
         )
@@ -936,10 +941,10 @@ class CompiledFxGraph(OutputCode):
 
                 if self.partition_maps is not None and policy is None:
                     # Partition codegen skips some whole-graph cudagraph checks,
-                    # so use the partition post-compile path even when loading
-                    # under a different ambient config. When a CUDAGraphPolicy
-                    # is active, use cudagraph_post_compile so the policy
-                    # controls wrapping via policy.cudagraphify().
+                    # so use the partition post-compile path even when no
+                    # partition was eligible for cudagraphs. When a
+                    # CUDAGraphPolicy is active, use cudagraph_post_compile so
+                    # the policy controls wrapping via policy.cudagraphify().
                     cudagraph_partition_post_compile(
                         example_inputs,
                         self,
