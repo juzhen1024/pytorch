@@ -8035,6 +8035,52 @@ class TestNNDeviceType(NNTestCase):
         if self.device_type == 'cuda':
             self._test_InstanceNorm_cuda_half(nn.InstanceNorm3d, input, device)
 
+    @skipMPS  # InstanceNorm3d is not supported on MPS
+    @dtypes(torch.float)
+    @dtypesIfCUDA(torch.float, torch.half)
+    def test_instancenorm_channels_last(self, device, dtype):
+        # channels_last inputs must not be converted to contiguous, see
+        # https://github.com/pytorch/pytorch/issues/59168
+        tol = {torch.float: 1e-5, torch.half: 1e-2}[dtype]
+        # only backends with channels_last group norm kernels keep the layout,
+        # see group_norm_memory_format in aten/src/ATen/native/group_norm.cpp
+        preserves_format = self.device_type in ('cpu', 'cuda')
+
+        def helper(cls, shape, memory_format, affine, track_running_stats):
+            mod = cls(shape[1], affine=affine, track_running_stats=track_running_stats).to(device)
+            ref_mod = deepcopy(mod)
+
+            input = torch.randn(shape, device=device, dtype=dtype)
+            input = input.contiguous(memory_format=memory_format).requires_grad_()
+            ref_input = input.detach().clone().contiguous().requires_grad_()
+            grad = torch.randn(shape, device=device, dtype=dtype).contiguous(memory_format=memory_format)
+
+            out = mod(input)
+            out.backward(grad)
+            ref_out = ref_mod(ref_input)
+            ref_out.backward(grad.contiguous())
+
+            if preserves_format and not track_running_stats:
+                self.assertTrue(out.is_contiguous(memory_format=memory_format))
+                self.assertTrue(input.grad.is_contiguous(memory_format=memory_format))
+            self.assertEqual(out, ref_out, atol=tol, rtol=tol)
+            self.assertEqual(input.grad, ref_input.grad, atol=tol, rtol=tol)
+            if affine:
+                self.assertEqual(mod.weight.grad, ref_mod.weight.grad, atol=tol, rtol=tol)
+                self.assertEqual(mod.bias.grad, ref_mod.bias.grad, atol=tol, rtol=tol)
+            if track_running_stats:
+                self.assertEqual(mod.running_mean, ref_mod.running_mean, atol=tol, rtol=tol)
+                self.assertEqual(mod.running_var, ref_mod.running_var, atol=tol, rtol=tol)
+
+        cases = [
+            (nn.InstanceNorm2d, (4, 8, 6, 7), torch.channels_last),
+            (nn.InstanceNorm2d, (4, 1, 6, 7), torch.channels_last),
+            (nn.InstanceNorm3d, (4, 8, 3, 6, 7), torch.channels_last_3d),
+            (nn.InstanceNorm3d, (4, 1, 3, 6, 7), torch.channels_last_3d),
+        ]
+        for (cls, shape, memory_format), affine, track_running_stats in product(cases, [True, False], [True, False]):
+            helper(cls, shape, memory_format, affine, track_running_stats)
+
     @parametrize_test("instance_norm_cls", [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d], name_fn=lambda c: c.__name__)
     @parametrize_test("no_batch_dim", [True, False])
     @parametrize_test("affine", [True, False])

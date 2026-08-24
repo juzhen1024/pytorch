@@ -14,6 +14,7 @@
 #include <ATen/native/cpu/Loops.h>
 #include <ATen/native/batch_norm.h>
 #include <ATen/native/Normalization.h>
+#include <ATen/native/group_norm.h>
 #include <ATen/native/Resize.h>
 #include <ATen/native/cpu/mixed_data_type.h>
 #include <c10/util/irange.h>
@@ -52,6 +53,7 @@
 #include <ATen/ops/native_batch_norm_backward.h>
 #include <ATen/ops/native_batch_norm_backward_native.h>
 #include <ATen/ops/native_batch_norm_native.h>
+#include <ATen/ops/native_group_norm.h>
 #include <ATen/ops/_native_batch_norm_legit.h>
 #include <ATen/ops/renorm_native.h>
 #include <ATen/ops/sum.h>
@@ -740,9 +742,39 @@ Tensor instance_norm(
 
  TORCH_CHECK(use_input_stats || (running_mean.defined() && running_var.defined()),
            "Expected running_mean and running_var to be defined when use_input_stats is false");
-  std::vector<SymInt> shape = input.sym_sizes().vec();
   SymInt b = input.sym_size(0);
   SymInt c = input.sym_size(1);
+
+  // Instance norm is group norm with one group per channel. The batch_norm path
+  // below folds N into C, which is not expressible as a view of a channels_last
+  // tensor, so it copies the input to contiguous and returns a contiguous
+  // output, forcing a layout conversion around every InstanceNorm of a
+  // channels_last model. native_group_norm has channels_last kernels, so prefer
+  // it when there are no running stats to update.
+  const auto memory_format = group_norm_memory_format(input);
+  const auto num_groups = c.maybe_as_int();
+  if ((memory_format == MemoryFormat::ChannelsLast ||
+       memory_format == MemoryFormat::ChannelsLast3d) &&
+      use_input_stats && !running_mean.defined() && !running_var.defined() &&
+      num_groups.has_value()) {
+    // native_group_norm's CUDA kernels read weight/bias with the input's
+    // scalar type, so fp32 affine params (e.g. under autocast) are cast down,
+    // which also makes the saved stats follow the input dtype. Reductions are
+    // still accumulated in fp32, so the extra rounding is of the same order as
+    // the low precision input itself.
+    const auto dtype = input.scalar_type();
+    return std::get<0>(at::native_group_norm_symint(
+        input,
+        weight.defined() ? weight.to(dtype) : weight,
+        bias.defined() ? bias.to(dtype) : bias,
+        b,
+        c,
+        c10::multiply_integers(input.sym_sizes().slice(2)),
+        *num_groups,
+        eps));
+  }
+
+  std::vector<SymInt> shape = input.sym_sizes().vec();
   shape[1] = b * c;
   shape[0] = SymInt(1);
 

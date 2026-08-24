@@ -4821,7 +4821,8 @@ module_db: list[ModuleInfo] = [
                module_inputs_func=partial(module_inputs_torch_nn_InstanceNormNd, N=2),
                train_and_eval_differ=True,
                skips=(
-                   # No channels_last support for InstanceNorm2d currently.
+                   # channels_last is preserved by InstanceNorm2d unless running stats
+                   # are tracked, which the module inputs above cover.
                    DecorateInfo(unittest.skip("Skipped!"), 'TestModule', 'test_memory_format'),)
                ),
     ModuleInfo(torch.nn.InstanceNorm3d,
@@ -4834,7 +4835,8 @@ module_db: list[ModuleInfo] = [
                    DecorateInfo(expectedFailureMPS, 'TestModuleMPS', 'test_forward'),
                    DecorateInfo(expectedFailureMPS, 'TestModuleMPS', 'test_non_contiguous'),
                    DecorateInfo(expectedFailureMPS, 'TestModuleMPS', 'test_save_load'),
-                   # No channels_last support for InstanceNorm3d currently.
+                   # channels_last is preserved by InstanceNorm3d unless running stats
+                   # are tracked, which the module inputs above cover.
                    DecorateInfo(unittest.skip("Skipped!"), 'TestModule', 'test_memory_format'),)
                ),
     ModuleInfo(torch.nn.LocalResponseNorm,
