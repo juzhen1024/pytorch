@@ -94,6 +94,7 @@ from .base import (
     AttributeMutationNew,
     GetSet,
     getset_build,
+    getset_load_or_build,
     getset_set,
     Member,
     Method,
@@ -4256,9 +4257,24 @@ def _check_descriptor_obj_type(
         )
 
 
+class DescriptorVariable(VariableTracker):
+    """Base class for CPython descriptor VTs.
+
+    Mirrors the behavior of PyDescr_Type, which is the base type for all
+    CPython descriptors.  The tp_descr_get slot on this type implements
+    the descriptor binding step, which is mirrored by tp_descr_get_impl
+    on this class.
+    """
+
+    tp_members = {
+        "__objclass__": Member(getset_build(lambda s: s.descriptor.__objclass__), None),
+        "__name__": Member(getset_build(lambda s: s.descriptor.__name__), None),
+    }
+
+
 # descr_members: __objclass__ and __name__ are PyMemberDef on all descriptor
 # types. https://github.com/python/cpython/blob/3.13/Objects/descrobject.c#L641-L645
-class WrapperDescriptorVariable(VariableTracker):
+class WrapperDescriptorVariable(DescriptorVariable):
     """Unbound C slot wrapper (wrapper_descriptor on a type).
 
     CPython types define behavior through C-level slots on PyTypeObject
@@ -4302,11 +4318,6 @@ class WrapperDescriptorVariable(VariableTracker):
 
     def get_real_python_backed_value(self) -> types.WrapperDescriptorType:
         return self.descriptor
-
-    tp_members = {
-        "__objclass__": Member(getset_build(lambda s: s.descriptor.__objclass__), None),
-        "__name__": Member(getset_build(lambda s: s.descriptor.__name__), None),
-    }
 
     def call_function(
         self,
@@ -4461,7 +4472,7 @@ class MethodWrapperVariable(VariableTracker):
         return python_constant_richcompare_impl(self, tx, other, op)
 
 
-class MethodDescriptorVariable(VariableTracker):
+class MethodDescriptorVariable(DescriptorVariable):
     """Unbound C method descriptor (method_descriptor on a type).
 
     CPython types expose their PyMethodDef-based C methods as
@@ -4504,11 +4515,6 @@ class MethodDescriptorVariable(VariableTracker):
 
     def get_real_python_backed_value(self) -> types.MethodDescriptorType:
         return self.descriptor
-
-    tp_members = {
-        "__objclass__": Member(getset_build(lambda s: s.descriptor.__objclass__), None),
-        "__name__": Member(getset_build(lambda s: s.descriptor.__name__), None),
-    }
 
     def call_function(
         self,
@@ -4616,7 +4622,7 @@ class BoundBuiltinMethodVariable(VariableTracker):
         codegen.extend_output(codegen.create_load_attrs(self.descriptor.__name__))
 
 
-class ClassMethodDescriptorVariable(VariableTracker):
+class ClassMethodDescriptorVariable(DescriptorVariable):
     """C-level classmethod descriptor (classmethod_descriptor on a type).
 
     CPython exposes C classmethods defined via PyMethodDef with METH_CLASS
@@ -4773,7 +4779,7 @@ class ClassMethodVariable(VariableTracker):
         )
 
 
-class MemberDescriptorVariable(VariableTracker):
+class MemberDescriptorVariable(DescriptorVariable):
     """C struct field descriptor (member_descriptor on a type).
 
     CPython exposes C struct fields defined via PyMemberDef as
@@ -4808,11 +4814,6 @@ class MemberDescriptorVariable(VariableTracker):
 
     def as_python_constant(self) -> types.MemberDescriptorType:
         return self.descriptor
-
-    tp_members = {
-        "__objclass__": Member(getset_build(lambda s: s.descriptor.__objclass__), None),
-        "__name__": Member(getset_build(lambda s: s.descriptor.__name__), None),
-    }
 
     def tp_descr_get_impl(
         self,
@@ -4862,7 +4863,7 @@ class MemberDescriptorVariable(VariableTracker):
         return variables.ConstantVariable.create(None)
 
 
-class GetSetDescriptorVariable(VariableTracker):
+class GetSetDescriptorVariable(DescriptorVariable):
     """C getter/setter descriptor (getset_descriptor on a type).
 
     CPython exposes C getter/setter pairs defined via PyGetSetDef as
@@ -4901,11 +4902,6 @@ class GetSetDescriptorVariable(VariableTracker):
 
     tp_getset = {
         "__get__": GetSet(_getset_descriptor_get, None),
-    }
-
-    tp_members = {
-        "__objclass__": Member(getset_build(lambda s: s.descriptor.__objclass__), None),
-        "__name__": Member(getset_build(lambda s: s.descriptor.__name__), None),
     }
 
     def is_python_constant(self) -> bool:
@@ -5056,7 +5052,7 @@ class TupleGetterVariable(VariableTracker):
     # https://github.com/python/cpython/blob/v3.13.0/Modules/_collectionsmodule.c#L2717-L2721
     tp_members = {
         "__doc__": Member(
-            getset_build(lambda s: s.descriptor.__doc__),
+            getset_load_or_build(lambda s: s.descriptor.__doc__, "__doc__"),
             getset_set("__doc__"),
         )
     }
