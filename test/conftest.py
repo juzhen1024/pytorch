@@ -304,12 +304,20 @@ def pytest_report_teststatus(report, config):
 
 
 @pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(items: list[Any]) -> None:
-    """
-    This hook is used when rerunning disabled tests to get rid of all skipped tests
-    instead of running and skipping them N times. This avoids flooding the console
-    and XML outputs with junk. So we want this to run last when collecting tests.
-    """
+def pytest_collection_modifyitems(config: Config, items: list[Any]) -> None:
+    """Apply suite-wide filters after sharding and other collection plugins."""
+    if os.getenv("PYTORCH_TEST_SKIP_NON_PERIODIC", "0") == "1":
+        periodic_items = []
+        deselected_items = []
+        for item in items:
+            if getattr(getattr(item, "obj", None), "periodic_test", False):
+                periodic_items.append(item)
+            else:
+                deselected_items.append(item)
+        items[:] = periodic_items
+        if deselected_items:
+            config.hook.pytest_deselected(items=deselected_items)
+
     rerun_disabled_tests = os.getenv("PYTORCH_TEST_RERUN_DISABLED_TESTS", "0") == "1"
     if not rerun_disabled_tests:
         return

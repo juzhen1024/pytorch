@@ -39,6 +39,9 @@ class TestPeriodicWorkflows(TestCase):
     def test_periodic_strict_runs_only_the_periodic_config(self) -> None:
         with open(os.path.join(WORKFLOWS_DIR, STRICT_WORKFLOW)) as f:
             workflow = yaml.safe_load(f)
+        test_job = workflow["jobs"]["linux-jammy-cuda13_0-py3_10-gcc11-test"]
+        self.assertIn("doctests", test_job["with"]["tests-to-exclude"].split())
+
         matrices = literal_test_matrices(workflow)
         self.assertTrue(matrices, msg=f"no test matrices found in {STRICT_WORKFLOW}")
         for job_name, entries in matrices.items():

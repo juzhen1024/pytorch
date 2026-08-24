@@ -24,7 +24,7 @@ from torch.testing._internal.common_utils import (
     IS_FBCODE, IS_JETSON, IS_MACOS, IS_SANDCASTLE, IS_WINDOWS, TestCase, run_tests, slowTest,
     parametrize, reparametrize, subtest, instantiate_parametrized_tests, dtype_name,
     TEST_SKIP_NON_PERIODIC, TEST_WITH_PERIODIC, TEST_WITH_ROCM, check_if_enable, decorateIf, periodic,
-    skipIfTorchDynamo, skipIfXpu, suppress_warnings,
+    skipIfTorchDynamo, skipIfXpu, suppress_warnings, TemporaryFileName,
 )
 from torch.testing._internal.common_cuda import has_device_side_assert
 from torch.testing._internal.common_device_type import \
@@ -661,6 +661,56 @@ class TestPeriodicDecorator(TestCase):
         self.assertEqual(len(result.skipped), 1)
         self.assertEqual(result.failures, [])
         self.assertEqual(result.errors, [])
+
+    @skipIfTorchDynamo("subprocess test does not need Dynamo coverage")
+    def test_periodic_only_filters_pytest_items(self):
+        source = """\
+from torch.testing._internal.common_utils import periodic, run_tests, TestCase
+
+def test_plain_pytest():
+    raise AssertionError("plain pytest test ran")
+
+@periodic
+def test_periodic_pytest():
+    print("PERIODIC_PYTEST_RAN")
+
+class TestSetUpWithoutSuper(TestCase):
+    def setUp(self):
+        if self._testMethodName == "test_plain":
+            raise AssertionError("plain TestCase setUp ran")
+
+    def test_plain(self):
+        raise AssertionError("plain TestCase test ran")
+
+    @periodic
+    def test_periodic(self):
+        print("PERIODIC_TESTCASE_RAN")
+
+if __name__ == "__main__":
+    run_tests()
+"""
+        test_dir = os.path.dirname(os.path.realpath(__file__))
+        with TemporaryFileName(prefix="test_periodic_filter_", suffix=".py", dir=test_dir) as test_file:
+            with open(test_file, "w") as f:
+                f.write(source)
+
+            env = os.environ.copy()
+            env.pop("CI", None)
+            env.pop("TEST_SHOWLOCALS", None)
+            env["PYTORCH_TEST_WITH_PERIODIC"] = "1"
+            env["PYTORCH_TEST_SKIP_NON_PERIODIC"] = "1"
+            result = subprocess.run(
+                [sys.executable, test_file, "--use-pytest", "-q", "-s"],
+                cwd=test_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, msg=output)
+        self.assertIn("PERIODIC_TESTCASE_RAN", output)
+        self.assertIn("PERIODIC_PYTEST_RAN", output)
 
     @parametrize("periodic_enabled", [False, True])
     def test_periodic_composes_with_parametrize(self, periodic_enabled):
