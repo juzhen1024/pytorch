@@ -372,17 +372,30 @@ class FxConverter:
         name = buffer.get_name()
         del self.buffer_to_node[name]
 
-    def _lookup_args(self, args: tuple[Any, ...]) -> tuple[Any, ...]:
+    def _lookup_args(
+        self, args: tuple[Any, ...], raw_args: Sequence[Any] | None
+    ) -> tuple[Any, ...]:
         """
-        Maps call args back to FX nodes.
+        Maps call args back to FX nodes. raw_args holds each arg's IR node, or
+        None for scheduler-generated kernels.
         """
+
+        def lookup(arg: Any, raw_arg: Any) -> Any:
+            if isinstance(arg, SymbolicCallArg):
+                return arg.inner_expr
+            if not isinstance(arg, str):
+                return arg
+            if arg in self.buffer_to_node:
+                return self.buffer_to_node[arg]
+            # No buffer by that name: the arg is a view, e.g. ir.ReinterpretView.
+            if not isinstance(raw_arg, ir.IRNode):
+                raise AssertionError(f"Unrecognized arg type: {type(raw_arg)}")
+            return self._generate_buffer(raw_arg)
+
+        if raw_args is None:
+            raw_args = [None] * len(args)
         return tuple(
-            self.buffer_to_node[arg]
-            if isinstance(arg, str)
-            else arg.inner_expr
-            if isinstance(arg, SymbolicCallArg)
-            else arg
-            for arg in args
+            lookup(arg, raw_arg) for arg, raw_arg in zip(args, raw_args, strict=True)
         )
 
     def _get_buffer(self, node: ir.IRNode) -> CodegenBuffer:
@@ -1084,7 +1097,7 @@ class FxConverter:
             raise AssertionError(f"expected KernelCallLine, got {type(line)}")
 
         # Collect all kwargs, including autotuned block sizes.
-        call_args = self._lookup_args(line.call_args)
+        call_args = self._lookup_args(line.call_args, line.raw_args)
         kernel = self.kernels[line.kernel_name]
         tuner = kernel.tuner
 
