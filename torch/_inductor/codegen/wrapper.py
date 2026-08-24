@@ -4687,22 +4687,43 @@ class PythonWrapperCodegen(CodeGen):
                     # individual output arguments are bound by
                     # generate_c_shim_fallback_kernel
                     if len(outputs) == 1:
-                        out = outputs[0]
+                        single_output = outputs[0]
                         # When fallback kernel returns a list consisting of a single tensor,
                         # the output is represented as a MultiOutput with non empty indices.
                         # In this case, we strip the first key path away.
-                        return go(
-                            outputs[0].get_name(),
-                            keypath[1:]
-                            if isinstance(out, ir.MultiOutput) and len(out.indices) != 0
-                            else keypath,
-                        )
-                    else:
-                        if not isinstance(keypath[0], pytree.SequenceKey):
-                            raise AssertionError(
-                                f"expected SequenceKey, got {type(keypath[0])}"
+                        if isinstance(single_output, ir.IRNode):
+                            return go(
+                                single_output.get_name(),
+                                keypath[1:]
+                                if isinstance(single_output, ir.MultiOutput)
+                                and single_output.indices
+                                else keypath,
                             )
-                        return go(outputs[keypath[0].idx].get_name(), keypath[1:])
+
+                    current_output = outputs
+                    remaining_keypath = keypath
+                    while isinstance(current_output, (list, tuple)):
+                        if not remaining_keypath or not isinstance(
+                            remaining_keypath[0], pytree.SequenceKey
+                        ):
+                            raise AssertionError(
+                                "expected SequenceKey while traversing nested "
+                                f"outputs, got {remaining_keypath}"
+                            )
+                        key = remaining_keypath[0]
+                        if not 0 <= key.idx < len(current_output):
+                            raise AssertionError(
+                                f"output index {key.idx} is out of range for "
+                                f"{type(current_output).__name__} with "
+                                f"{len(current_output)} elements"
+                            )
+                        current_output = current_output[key.idx]
+                        remaining_keypath = remaining_keypath[1:]
+                    if not isinstance(current_output, ir.IRNode):
+                        raise AssertionError(
+                            f"expected IRNode output, got {type(current_output)}"
+                        )
+                    return go(current_output.get_name(), remaining_keypath)
                 else:
                     return go(output_name, keypath)
 
