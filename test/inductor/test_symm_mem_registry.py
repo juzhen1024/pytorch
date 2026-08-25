@@ -7,6 +7,7 @@ This test suite validates the symm_mem argument registration system, which allow
 operators to declare which arguments require symmetric memory allocation.
 """
 
+from unittest import skipIf
 from unittest.mock import patch
 
 import torch
@@ -21,7 +22,6 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 from torch.testing._internal.inductor_utils import HAS_TRITON
-from unittest import skipIf
 
 
 def register_symm_mem_args(op, arg_names):
